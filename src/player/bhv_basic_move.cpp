@@ -42,6 +42,7 @@
 
 #include "basic_actions/basic_actions.h"
 #include "basic_actions/body_go_to_point.h"
+#include "basic_actions/arm_point_to_point.h"
 #include "basic_actions/body_intercept.h"
 #include "basic_actions/neck_turn_to_ball_or_scan.h"
 #include "basic_actions/neck_scan_field.h"
@@ -75,11 +76,7 @@ Bhv_BasicMove::execute( PlayerAgent * agent )
     //-----------------------------------------------
     // tackle
     // G2d: tackle probability
-    double doTackleProb = 0.15; // Tackle on sight (was 0.8)
-    // if (wm.ball().pos().x < 0.0)
-    // {
-    //   doTackleProb = 0.5;
-    // }
+    double doTackleProb = ( wm.ball().pos().x < 0.0 ? 0.5 : 0.15 );
 
     if ( Bhv_BasicTackle( doTackleProb, 100.0 ).execute( agent ) )
     {
@@ -92,7 +89,7 @@ Bhv_BasicMove::execute( PlayerAgent * agent )
     const int mate_min = wm.interceptTable().teammateStep();
     const int opp_min = wm.interceptTable().opponentStep();
 
-    const Vector2D target_point = Strategy::i().getPosition( wm.self().unum() );
+    Vector2D target_point = Strategy::i().getPosition( wm.self().unum() );
 
     // G2d: to retrieve opp team name
     // C2D: Helios 18 Tune removed -> replace with BNN
@@ -165,8 +162,15 @@ Bhv_BasicMove::execute( PlayerAgent * agent )
     // if (helios2018) 
 	// pressing = 4;
 
+    // Defensores en campo propio: presionar sin requerir ser el más cercano
+    bool defender_deep_press = ( ( role == 2 || role == 3 || role == 4 || role == 5 )
+                                  && wm.ball().pos().x < -20.0
+                                  && self_min < opp_min + pressing
+                                  && self_min < 20 );
+
     if ( ! wm.kickableTeammate()
          && ( self_min <= 3
+              || defender_deep_press
               || ( self_min <= mate_min
                    && self_min < opp_min + pressing ) // pressing
               )
@@ -229,6 +233,47 @@ Bhv_BasicMove::execute( PlayerAgent * agent )
 
     double dist_thr = wm.ball().distFromSelf() * 0.1;
     if ( dist_thr < 1.0 ) dist_thr = 1.0;
+
+    // ── Marcaje suave: desplazar target máx 4m hacia rival peligroso cercano ──
+    if ( role >= 2 && role <= 5
+         && wm.ball().pos().x < 5.0
+         && ! wm.kickableTeammate() )
+    {
+        const Vector2D goal_center( -ServerParam::i().pitchHalfLength(), 0.0 );
+        const PlayerObject * nearest_threat = nullptr;
+        double best_threat_dist = 15.0; // solo rivales a <15m de la zona del defensor
+
+        for ( const PlayerObject * opp : wm.opponents() )
+        {
+            if ( ! opp || opp->isGhost() || opp->goalie() ) continue;
+            if ( opp->pos().x > 5.0 ) continue; // solo en nuestra mitad
+
+            double d = target_point.dist( opp->pos() );
+            if ( d < best_threat_dist )
+            {
+                best_threat_dist = d;
+                nearest_threat = opp;
+            }
+        }
+
+        if ( nearest_threat )
+        {
+            // Punto intermedio entre home y rival, pero máximo 4m de desplazamiento
+            Vector2D shift = nearest_threat->pos() - target_point;
+            double shift_len = shift.r();
+            if ( shift_len > 0.5 )
+            {
+                double max_shift = 4.0;
+                if ( shift_len > max_shift )
+                    shift.setLength( max_shift );
+
+                target_point += shift;
+            }
+
+            // PointTo visual: señalar al rival que se cubre
+            agent->setArmAction( new Arm_PointToPoint( nearest_threat->pos() ) );
+        }
+    }
 
     dlog.addText( Logger::TEAM,
                   __FILE__": Bhv_BasicMove target=(%.1f %.1f) dist_thr=%.2f",

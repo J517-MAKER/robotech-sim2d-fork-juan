@@ -91,15 +91,11 @@ Bhv_GoalieChaseBall::execute( PlayerAgent * agent )
          && my_int_pos.x < SP.ourPenaltyAreaLineX() - pen_thr
          && my_int_pos.absY() < SP.penaltyAreaHalfWidth() - pen_thr )
     {
-        bool save_recovery = false;
-        if ( ball_line.dist( wm.self().pos() ) < SP.catchableArea() )
-        {
-            save_recovery = true;
-        }
+        // Portero siempre a máxima potencia al interceptar — nunca ahorrar energía
         dlog.addText( Logger::TEAM,
                       __FILE__": execute normal intercept" );
         agent->debugClient().addMessage( "Intercept(0)" );
-        Body_Intercept( save_recovery ).execute( agent );
+        Body_Intercept( false ).execute( agent );
         agent->setNeckAction( new Neck_TurnToBall() );
         return true;
     }
@@ -378,10 +374,26 @@ Bhv_GoalieChaseBall::is_ball_chase_situation( const PlayerAgent  * agent )
 
     const Vector2D my_int_pos = wm.ball().inertiaPoint( wm.interceptTable().selfStep() );
 
+    ////////////////////////////////////////////////////////////////////////
+    // SWEEPER-KEEPER: balón libre rodando hacia portería, portero sale a interceptar
+    if ( ! wm.kickableOpponent()
+         && ! wm.kickableTeammate()
+         && wm.ball().vel().x < -0.4          // balón moviéndose hacia nuestra portería
+         && wm.ball().pos().x < 0.0           // balón en nuestra mitad
+         && self_min <= opp_min + 2           // portero llega igual o antes que rival
+         && my_int_pos.x < SP.ourPenaltyAreaLineX() + 8.0  // intercepción no muy lejos del área
+         && my_int_pos.absY() < SP.penaltyAreaHalfWidth() + 3.0 )
+    {
+        dlog.addText( Logger::TEAM,
+                      __FILE__": sweeper-keeper: salgo a interceptar balon libre" );
+        std::cerr << "SWEEPER: balon libre hacia porteria, salgo" << std::endl;
+        return true;
+    }
+
     double pen_thr = wm.ball().distFromSelf() * 0.1 + 1.0;
     if ( pen_thr < 1.0 ) pen_thr = 1.0;
     if ( my_int_pos.absY() > SP.penaltyAreaHalfWidth() * 1.5 - pen_thr
-         || my_int_pos.x > SP.ourPenaltyAreaLineX() - 3.0 - pen_thr )
+         || my_int_pos.x > SP.ourPenaltyAreaLineX() - pen_thr )
     {
         dlog.addText( Logger::TEAM,
                       __FILE__": intercept point is out of penalty" );
@@ -390,7 +402,9 @@ Bhv_GoalieChaseBall::is_ball_chase_situation( const PlayerAgent  * agent )
 
     ////////////////////////////////////////////////////////////////////////
     // NUEVO: No perseguir si el balón se está alejando de la portería
-    if ( wm.ball().vel().x > 0.3 )  // Balón moviéndose hacia campo contrario
+    // Solo bloquear chase si balón se aleja Y está fuera del área peligrosa
+    if ( wm.ball().vel().x > 0.3
+         && wm.ball().pos().x > SP.ourPenaltyAreaLineX() )
     {
         dlog.addText( Logger::TEAM,
                       __FILE__": ball is moving away from goal. vel.x=%.2f don't chase",
@@ -455,7 +469,7 @@ Bhv_GoalieChaseBall::is_ball_shoot_moving( const PlayerAgent * agent )
     }
 
 #if 1
-    if ( wm.ball().pos().x > -29.5 )
+    if ( wm.ball().pos().x > -24.0 )
     {
         return false;
     }

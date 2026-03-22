@@ -68,3 +68,30 @@ src/trainer/sample_trainer
 *~
 # Backup files
 *.bak
+
+# Windows NTFS Zone.Identifier streams
+*:Zone.Identifier
+
+# Visual Studio local state
+.vs/
+
+# Automake directory stamps
+.dirstamp
+
+# Keras/HDF5 model files
+*.h5
+
+# Timestamped config backups
+*.conf_2*
+*.conf.2*
+
+# Tar archives
+*.tar.gz
+
+# Pre-built deployment directory
+src/robotech/
+
+# Build output symlinks
+src/sample_player
+src/sample_coach
+src/sample_trainer

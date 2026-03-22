@@ -87,6 +87,7 @@ sample_player_SOURCES = \
 	bhv_basic_block.cpp \
 	bhv_basic_move.cpp \
 	bhv_basic_tackle.cpp \
+	bhv_mark_opponent.cpp \
 	bhv_unmark.cpp \
 	bhv_custom_before_kick_off.cpp \
 	bhv_goalie_basic_move.cpp \
@@ -225,6 +226,7 @@ noinst_HEADERS = \
 	bhv_basic_block.h \
 	bhv_basic_move.h \
 	bhv_basic_tackle.h \
+	bhv_mark_opponent.h \
 	bhv_unmark.h \
 	bhv_custom_before_kick_off.h \
 	bhv_goalie_basic_move.h \

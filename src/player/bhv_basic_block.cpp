@@ -180,7 +180,7 @@ std::pair<int, Vector2D> Bhv_BasicBlock::get_best_blocker(const PlayerAgent *age
             auto tm = wm.ourPlayer(tm_unum);
             Vector2D tm_pos = tm->pos() + tm->vel(); //tm->playerTypePtr()->inertiaPoint(tm_pos, tm->vel(), cycle);
             double dist = ball_inertia.dist(tm_pos);
-            int dash_step = tm->playerTypePtr()->cyclesToReachDistance(dist);
+            int dash_step = tm->playerTypePtr()->cyclesToReachDistance(dist) + 2; // +2 turn buffer
             if (dash_step <= cycle)
             {
                 #ifdef DEBUG_BLOCK

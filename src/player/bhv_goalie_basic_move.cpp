@@ -83,16 +83,41 @@ bool Bhv_GoalieBasicMove::execute( PlayerAgent * agent )
     // 1) SI EL BALÓN ESTÁ MUY CERCA DE SU ÁREA → Volver a home (CON HISTÉRESIS)
     const double CLOSE_DIST = 15.0;
     const double CLOSE_DIST_HYSTERESIS = 18.0;  // Umbral más alto si estaba presionando
-    const Vector2D HOME_UP   = Vector2D(-51.0,  6.0);
-    const Vector2D HOME_DOWN = Vector2D(-51.0, -6.0);
-    const Vector2D HOME_POINT = (ball_pos.y >= 0.0 ? HOME_UP : HOME_DOWN);
+    const Vector2D HOME_POINT = Vector2D(-51.0, 0.0);
 
     double close_threshold = s_was_pressing ? CLOSE_DIST_HYSTERESIS : CLOSE_DIST;
 
     if ( ball_dist < close_threshold )
     {
-        s_was_pressing = false;  // Ya no está presionando
-        std::cerr << "[DBG Bhv_GoalieBasicMove] balón cerca (" << ball_dist 
+        s_was_pressing = false;
+
+        // 1v1 dentro del área: rival tiene balón sin defensor cerca → avanzar a tapar ángulo
+        if ( wm.kickableOpponent() )
+        {
+            const PlayerObject * opp = wm.kickableOpponent();
+            if ( opp && opp->pos().x < SP.ourPenaltyAreaLineX()
+                 && opp->pos().absY() < 8.0 )  // no activar en cruces abiertos
+            {
+                bool defender_near = false;
+                for ( const PlayerObject * tm : wm.teammatesFromBall() )
+                {
+                    if ( tm->goalie() ) continue;
+                    if ( tm->distFromBall() < 8.0 ) { defender_near = true; break; }
+                }
+                if ( ! defender_near )
+                {
+                    double target_y = opp->pos().y * 0.3;
+                    target_y = std::max( target_y, -( SP.goalHalfWidth() - 0.5 ) );
+                    target_y = std::min( target_y,    SP.goalHalfWidth() - 0.5  );
+                    Vector2D advance( -44.0, target_y );
+                    agent->debugClient().addMessage( "1v1CloseAdvance" );
+                    agent->setNeckAction( new Neck_GoalieTurnNeck() );
+                    return Body_GoToPoint( advance, 1.0, SP.maxDashPower() ).execute( agent );
+                }
+            }
+        }
+
+        std::cerr << "[DBG Bhv_GoalieBasicMove] balón cerca (" << ball_dist
                   << "m), volviendo a home: " << HOME_POINT << std::endl;
         agent->doTurn( 0.0 );
         agent->setNeckAction( new Neck_GoalieTurnNeck() );
@@ -191,9 +216,38 @@ bool Bhv_GoalieBasicMove::execute( PlayerAgent * agent )
 Vector2D
 Bhv_GoalieBasicMove::getTargetPoint( PlayerAgent * agent )
 {
-    const double base_move_x = -43.0;
+    const double base_move_x = -42.0;
     const double danger_move_x = -49.0;
+    const ServerParam & SP = ServerParam::i();
     const WorldModel & wm = agent->world();
+
+    // 1v1: rival tiene el balón dentro del área y no hay defensor de campo cerca
+    if ( wm.kickableOpponent() )
+    {
+        const PlayerObject * opp = wm.kickableOpponent();
+        if ( opp && opp->pos().x < SP.ourPenaltyAreaLineX()
+             && opp->pos().absY() < 8.0 )  // no activar en cruces abiertos
+        {
+            bool defender_near = false;
+            for ( const PlayerObject * tm : wm.teammatesFromBall() )
+            {
+                if ( tm->goalie() ) continue;
+                if ( tm->distFromBall() < 8.0 )
+                {
+                    defender_near = true;
+                    break;
+                }
+            }
+            if ( ! defender_near )
+            {
+                double target_y = opp->pos().y * 0.3;
+                target_y = std::max( target_y, -( SP.goalHalfWidth() - 0.5 ) );
+                target_y = std::min( target_y,    SP.goalHalfWidth() - 0.5  );
+                agent->debugClient().addMessage( "1v1Advance" );
+                return Vector2D( -38.0, target_y );
+            }
+        }
+    }
 
     int ball_reach_step = 0;
     if ( ! wm.kickableTeammate()

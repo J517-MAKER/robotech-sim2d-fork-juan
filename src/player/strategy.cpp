@@ -1150,6 +1150,7 @@ Strategy::getPosition( const int unum ) const
 Formation::Ptr
 Strategy::getFormation( const WorldModel & wm ) const
 {
+
     //
     // play on
     //
@@ -1345,16 +1346,17 @@ Strategy::getFormation( const WorldModel & wm ) const
                           << " LEFT=" << (int)rcsc::LEFT << " RIGHT=" << (int)rcsc::RIGHT << std::endl;
                 if ( wm.ourSide() == rcsc::LEFT )
                 {
-                    std::cerr << "[DEBUG AfterGoal] Returning R LEFT formation" << std::endl;
+                    std::cerr << "[DEBUG AfterGoal] Returning R LEFT formation First Section" << std::endl;
                     return M_after_goal_formation;
                 }
                 else
                 {
-                    std::cerr << "[DEBUG AfterGoal] Returning R RIGHT formation" << std::endl;
+                    std::cerr << "[DEBUG AfterGoal] Returning R RIGHT formation Second Section test" << std::endl;
                     if ( M_after_goal_r_right_formation )
                     {
-                         rcsc::Vector2D p11 = M_after_goal_r_right_formation->getPosition(11, wm.ball().pos());
-                         std::cerr << "[DEBUG AfterGoal] R-Right P11 pos: " << p11.x << ", " << p11.y << std::endl;
+                        
+                        rcsc::Vector2D p11 = M_after_goal_r_right_formation->getPosition(11, wm.ball().pos());
+                         return M_after_goal_r_right_formation;
                     }
                     return M_after_goal_r_right_formation;
                 }
