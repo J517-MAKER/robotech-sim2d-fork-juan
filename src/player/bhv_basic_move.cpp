@@ -75,8 +75,30 @@ Bhv_BasicMove::execute( PlayerAgent * agent )
 
     //-----------------------------------------------
     // tackle
-    // G2d: tackle probability
-    double doTackleProb = ( wm.ball().pos().x < 0.0 ? 0.5 : 0.15 );
+    // Zone-based tackle threshold: failed tackle freezes player 10 cycles.
+    // Near own goal that's catastrophic; in opponent half it's low risk.
+    double doTackleProb;
+    if ( wm.ball().pos().x < -36.0 )
+        doTackleProb = 0.85;    // danger zone: only high-confidence tackles
+    else if ( wm.ball().pos().x < 0.0 )
+        doTackleProb = 0.5;     // defensive half: moderate threshold
+    else
+        doTackleProb = 0.15;    // offensive half: aggressive attempts
+
+    // With defensive cover behind us, we can afford more risk
+    if ( doTackleProb > 0.15 )
+    {
+        for ( const PlayerObject * tm : wm.teammatesFromSelf() )
+        {
+            if ( tm && ! tm->goalie()
+                 && tm->pos().x < wm.self().pos().x - 3.0
+                 && tm->pos().dist( wm.ball().pos() ) < 15.0 )
+            {
+                doTackleProb = std::max( 0.3, doTackleProb - 0.2 );
+                break;
+            }
+        }
+    }
 
     if ( Bhv_BasicTackle( doTackleProb, 100.0 ).execute( agent ) )
     {
@@ -269,9 +291,45 @@ Bhv_BasicMove::execute( PlayerAgent * agent )
 
                 target_point += shift;
             }
+            // Defenders no longer use PointTo for marking — reserve it for offense
+        }
+    }
 
-            // PointTo visual: señalar al rival que se cubre
-            agent->setArmAction( new Arm_PointToPoint( nearest_threat->pos() ) );
+    // Offensive PointTo: ONLY the best-positioned receiver signals.
+    // PointTo lasts 20 cycles, cooldown 5 cycles — one clear signal is
+    // more valuable than everyone pointing at once.
+    // Only forwards/off-mids (role >= 7) who are ahead of the ball,
+    // behind the offside line, and closest teammate to the offside line.
+    if ( role >= 7
+         && wm.kickableTeammate()
+         && wm.ball().distFromSelf() < 35.0
+         && wm.self().pos().x > wm.ball().pos().x - 5.0
+         && wm.self().pos().x < wm.offsideLineX() - 1.0 )
+    {
+        // Check if I'm the teammate closest to the offside line (best receiver)
+        bool i_am_best_receiver = true;
+        for ( const PlayerObject * tm : wm.teammatesFromSelf() )
+        {
+            if ( ! tm || tm->goalie() ) continue;
+            if ( tm->pos().x > wm.self().pos().x
+                 && tm->pos().x < wm.offsideLineX()
+                 && tm->distFromBall() < 35.0 )
+            {
+                i_am_best_receiver = false;
+                break;
+            }
+        }
+
+        if ( i_am_best_receiver )
+        {
+            double through_x = std::min( wm.self().pos().x + 7.0,
+                                         wm.offsideLineX() - 0.5 );
+            double through_y = wm.self().pos().y;
+            if ( role == 9 || role == 10 )
+                through_y *= 0.8;
+
+            agent->setArmAction( new Arm_PointToPoint(
+                Vector2D( through_x, through_y ) ) );
         }
     }
 

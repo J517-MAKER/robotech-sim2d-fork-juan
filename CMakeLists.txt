@@ -57,6 +57,11 @@ endif()
 
 # generate config.h
 add_definitions(-DHAVE_CONFIG_H)
+
+# Enable DNN field evaluator (trained from match logs)
+# CppDNN is header-only, uses Eigen3 (already linked via librcsc)
+add_definitions(-DHAVE_CPPDNN)
+include_directories(${PROJECT_SOURCE_DIR}/../../tools)
 configure_file(
   ${PROJECT_SOURCE_DIR}/cmake-config.h.in
   ${PROJECT_BINARY_DIR}/config.h

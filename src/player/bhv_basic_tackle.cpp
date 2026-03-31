@@ -83,6 +83,23 @@ Bhv_BasicTackle::execute( PlayerAgent * agent )
     const int mate_min = wm.interceptTable().teammateStep();
     const int opp_min = wm.interceptTable().opponentStep();
 
+    // Tactical foul in last-defender situations outside penalty area:
+    // Foul stops play (free kick), only 5-cycle freeze vs 10 for tackle,
+    // and foul detection rate is only 50%. Prefer foul when deep in defense
+    // and opponent clearly beats all teammates.
+    if ( ! use_foul
+         && agent->config().version() >= 14.0
+         && wm.self().card() == NO_CARD
+         && wm.ball().pos().x < -30.0
+         && ( wm.ball().pos().x > SP.ourPenaltyAreaLineX() + 0.5
+              || wm.ball().pos().absY() > SP.penaltyAreaHalfWidth() + 0.5 )
+         && opp_min < mate_min - 2
+         && wm.self().foulProbability() > 0.7 )
+    {
+        tackle_prob = std::max( tackle_prob, wm.self().foulProbability() );
+        use_foul = true;
+    }
+
     const Vector2D self_reach_point = wm.ball().inertiaPoint( self_min );
 
     //

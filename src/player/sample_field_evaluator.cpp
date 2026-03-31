@@ -36,6 +36,8 @@
 
 #include "field_analyzer.h"
 #include "simple_pass_checker.h"
+#include "planner/action_state_pair.h"
+#include "planner/cooperative_action.h"
 
 #include <rcsc/player/player_evaluator.h>
 #include <rcsc/common/server_param.h>
@@ -50,12 +52,111 @@
 #include <algorithm>
 #include <cmath>
 #include <cfloat>
+#include <fstream>
+
+// Optional: DNN-based field evaluation (trained from match logs)
+// To enable: place field_eval_weights.txt in the bin/ directory
+// Train with: scripts/training_field_eval/train_from_matches.sh
+#ifdef HAVE_CPPDNN
+#include <CppDNN/DeepNueralNetwork.h>
+#endif
 
 // #define DEBUG_PRINT
 
 using namespace rcsc;
 
 static const int VALID_PLAYER_THRESHOLD = 8;
+
+// DNN field evaluator (loaded once, used as bonus on top of heuristic)
+namespace {
+#ifdef HAVE_CPPDNN
+    static DeepNueralNetwork * s_field_eval_dnn = nullptr;
+    static bool s_dnn_load_attempted = false;
+#endif
+    static bool s_dnn_available = false;
+}
+
+static void try_load_field_eval_dnn()
+{
+#ifdef HAVE_CPPDNN
+    if ( s_dnn_load_attempted ) return;
+    s_dnn_load_attempted = true;
+
+    std::ifstream test("./field_eval_weights.txt");
+    if ( ! test.good() )
+    {
+        std::cerr << "[FieldEvalDNN] No weights file found, using heuristic only" << std::endl;
+        return;
+    }
+    test.close();
+
+    s_field_eval_dnn = new DeepNueralNetwork();
+    s_field_eval_dnn->ReadFromKeras("./field_eval_weights.txt");
+    s_dnn_available = true;
+    std::cerr << "[FieldEvalDNN] Loaded field_eval_weights.txt successfully" << std::endl;
+#endif
+}
+
+static double dnn_evaluate( const PredictState & state, const WorldModel & wm )
+{
+#ifdef HAVE_CPPDNN
+    if ( ! s_dnn_available ) return 0.0;
+
+    // Build 48-dim feature vector matching extract_from_logs.py
+    Eigen::MatrixXd input(48, 1);
+
+    // Ball features [0-3]
+    input(0, 0) = state.ball().pos().x / 52.5;
+    input(1, 0) = state.ball().pos().y / 34.0;
+    input(2, 0) = state.ball().vel().x / 3.0;
+    input(3, 0) = state.ball().vel().y / 3.0;
+
+    // Our players [4-25]: x, y for unum 1-11
+    int idx = 4;
+    for ( int u = 1; u <= 11; ++u )
+    {
+        const AbstractPlayerObject * p = state.ourPlayer(u);
+        if ( p )
+        {
+            input(idx, 0)     = p->pos().x / 52.5;
+            input(idx + 1, 0) = p->pos().y / 34.0;
+        }
+        else
+        {
+            input(idx, 0)     = 0.0;
+            input(idx + 1, 0) = 0.0;
+        }
+        idx += 2;
+    }
+
+    // Opponent players [26-47]: x, y for unum 1-11
+    for ( int u = 1; u <= 11; ++u )
+    {
+        const AbstractPlayerObject * p = state.theirPlayer(u);
+        if ( p )
+        {
+            input(idx, 0)     = p->pos().x / 52.5;
+            input(idx + 1, 0) = p->pos().y / 34.0;
+        }
+        else
+        {
+            input(idx, 0)     = 0.0;
+            input(idx + 1, 0) = 0.0;
+        }
+        idx += 2;
+    }
+
+    // Forward pass
+    s_field_eval_dnn->Calculate(input);
+    double score = s_field_eval_dnn->mOutput(0, 0);  // sigmoid output [0, 1]
+
+    // Scale to meaningful range: 0.5 neutral, >0.5 favorable
+    return (score - 0.5) * 4.0;  // maps [0,1] → [-2, +2]
+#else
+    (void)state; (void)wm;
+    return 0.0;
+#endif
+}
 
 
 /*-------------------------------------------------------------------*/
@@ -71,7 +172,7 @@ static double evaluate_state( const PredictState & state , const rcsc::WorldMode
  */
 SampleFieldEvaluator::SampleFieldEvaluator()
 {
-
+    try_load_field_eval_dnn();
 }
 
 /*-------------------------------------------------------------------*/
@@ -89,16 +190,42 @@ SampleFieldEvaluator::~SampleFieldEvaluator()
  */
 double
 SampleFieldEvaluator::operator()(const PredictState &state,
-                                 const std::vector<ActionStatePair> & /*path*/,
+                                 const std::vector<ActionStatePair> &path,
                                  const rcsc::WorldModel &wm) const
 {
     const double final_state_evaluation = evaluate_state( state , wm);
 
-    //
-    // ???
-    //
-
     double result = final_state_evaluation;
+
+    // DNN bonus: trained from match logs (adds [-2, +2] to score)
+    result += dnn_evaluate( state, wm );
+
+    // Pass-over-dribble bonus: ball travels at decay 0.94 vs player decay 0.40,
+    // meaning passing is ~3x faster than dribbling. Chains with short passes
+    // advance play more efficiently and give opponents less time to reorganize.
+    if ( ! path.empty() )
+    {
+        for ( const auto & asp : path )
+        {
+            if ( asp.action().category() == CooperativeAction::Pass )
+            {
+                double pass_dist = asp.action().targetPoint().dist( state.ball().pos() );
+                // Strongly favor passes: ball at 0.94 decay vs player 0.40
+                // Short passes are safer and faster
+                if ( pass_dist < 15.0 )
+                    result += 1.5;   // short passes: fast, accurate
+                else if ( pass_dist < 25.0 )
+                    result += 1.0;   // medium passes: good
+                else
+                    result += 0.5;   // long passes: still better than dribble
+            }
+            else if ( asp.action().category() == CooperativeAction::Dribble )
+            {
+                // Penalize dribble chains: much slower than passing
+                result -= 0.3;
+            }
+        }
+    }
 
     return result;
 }

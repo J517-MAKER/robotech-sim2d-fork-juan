@@ -1607,16 +1607,22 @@ Strategy::get_normal_dash_power( const WorldModel & wm )
     const int mate_min = wm.interceptTable().teammateStep();
     const int opp_min = wm.interceptTable().opponentStep();
 
-    // AGGRESSIVE SPEED BOOST
-    // If I am the closest teammate (or have ball), ignore stamina conversation
+    // SPEED BOOST when closest to ball — but with stamina conservation
+    // Backward dash costs 2x stamina, effort only recovers above 60% stamina.
+    // Burning all stamina early leaves the player degraded in late game.
     if ( self_min <= mate_min )
     {
-        double boost_power = ServerParam::i().maxDashPower();
-        std::cerr << "[DBG Strategy] BOOST ENABLED! Unum: " << wm.self().unum()
-                  << ", Dist: " << self_min
-                  << ", Stamina: " << wm.self().stamina()
-                  << std::endl;
-        return boost_power;
+        // Conserve when stamina is critically low and not an emergency intercept
+        // (stamina < 35% means effort is decaying; capacity drain is permanent)
+        if ( ! wm.self().staminaModel().capacityIsEmpty()
+             && wm.self().stamina() < ServerParam::i().staminaMax() * 0.35
+             && self_min > 3 )
+        {
+            double conservative = wm.self().playerType().staminaIncMax()
+                                * wm.self().recovery() * 1.5;
+            return std::min( conservative, ServerParam::i().maxDashPower() );
+        }
+        return ServerParam::i().maxDashPower();
     }
 
     // check recover
@@ -1672,11 +1678,11 @@ Strategy::get_normal_dash_power( const WorldModel & wm )
     else if (wm.ball().pos().x > 36.0 && wm.self().pos().x > 36.0 && mate_min < opp_min - 4)
         dash_power = ServerParam::i().maxDashPower();
 
-    // exist kickable teammate
+    // exist kickable teammate — sprint to get open for a pass
     else if ( wm.kickableTeammate()
               && wm.ball().distFromSelf() < 20.0 )
     {
-        dash_power = std::min( my_inc * 1.1,
+        dash_power = std::min( my_inc * 1.6,
                                ServerParam::i().maxDashPower() );
         dlog.addText( Logger::TEAM,
                       __FILE__": (get_normal_dash_power) exist kickable teammate. dash_power=%.1f",
@@ -1702,10 +1708,10 @@ Strategy::get_normal_dash_power( const WorldModel & wm )
                       __FILE__": (get_normal_dash_power) opponent ball dash_power=%.1f",
                       dash_power );
     }
-    // normal
+    // normal — use higher multiplier to keep up with fast opponents
     else
     {
-        dash_power = std::min( my_inc * 1.7,
+        dash_power = std::min( my_inc * 2.2,
                                ServerParam::i().maxDashPower() );
         dlog.addText( Logger::TEAM,
                       __FILE__": (get_normal_dash_power) normal mode dash_power=%.1f",

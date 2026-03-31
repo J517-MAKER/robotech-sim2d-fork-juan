@@ -61,23 +61,25 @@ namespace {
 double
 s_get_ball_speed_for_pass( const double & distance )
 {
-    if ( distance >= 20.0 )
+    if ( distance >= 25.0 )
     {
-        //return 3.0;
+        return 2.8;   // near max ball speed (3.0) for long passes
+    }
+    else if ( distance >= 15.0 )
+    {
         return 2.5;
     }
     else if ( distance >= 8.0 )
     {
-        //return 2.5;
-        return 2.0;
+        return 2.2;
     }
     else if ( distance >= 5.0 )
     {
-        return 1.8;
+        return 2.0;
     }
     else
     {
-        return 1.5;
+        return 1.7;
     }
 }
 

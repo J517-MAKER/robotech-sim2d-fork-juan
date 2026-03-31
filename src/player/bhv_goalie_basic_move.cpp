@@ -60,150 +60,101 @@ bool Bhv_GoalieBasicMove::execute( PlayerAgent * agent )
     const WorldModel & wm = agent->world();
     const ServerParam & SP = ServerParam::i();
 
-    double ball_dist = wm.ball().distFromSelf();
-    Vector2D ball_pos = wm.ball().pos();
+    // ---------------------------------------------------------------
+    // PRIORITY 0: Tackle if possible
+    if ( Bhv_BasicTackle( 1.0, 98.0 ).execute( agent ) ) return true;
 
-    // NUEVO: Variables estáticas para histéresis (evitar bucle)
-    static bool s_was_pressing = false;
-    static GameTime s_last_press_time(0, 0);
-
-    // NUEVO: En saques de banda/córner, mantener posición conservadora
-    if ( wm.gameMode().type() == GameMode::KickIn_
-         || wm.gameMode().type() == GameMode::CornerKick_ )
+    // ---------------------------------------------------------------
+    // PRIORITY 1: Intercept / react based on WHO has the ball
     {
-        Vector2D conservative_pos(-49.0, 0.0);
-        std::cerr << "[DBG Bhv_GoalieBasicMove] saque de banda/córner, posición conservadora" 
-                  << std::endl;
-        agent->debugClient().addMessage( "ConservativePos" );
-        agent->doTurn( 0.0 );
-        agent->setNeckAction( new Neck_GoalieTurnNeck() );
-        return Body_GoToPoint( conservative_pos, 1.0, SP.maxDashPower() * 0.5 ).execute( agent );
+        const int self_step = wm.interceptTable().selfStep();
+        const int tm_step   = wm.interceptTable().teammateStep();
+        const int opp_step  = wm.interceptTable().opponentStep();
+
+        const Vector2D ball_pos = wm.ball().pos();
+        const bool ball_in_area = ( ball_pos.x < SP.ourPenaltyAreaLineX() + 3.0
+                                    && ball_pos.absY() < SP.penaltyAreaHalfWidth() + 3.0 );
+        const bool ball_coming = ( wm.ball().vel().x < -0.2 );
+
+        const bool opp_has_ball = ( wm.kickableOpponent() != nullptr );
+        const bool tm_has_ball  = ( wm.kickableTeammate() != nullptr );
+        const bool ball_is_loose = ( ! opp_has_ball && ! tm_has_ball );
+
+        // (A) OPPONENT has ball in/near our penalty area → COME OUT aggressively
+        //     The GK must rush to cut angle / block shot. Be very generous
+        //     with step tolerance because contesting is better than staying back.
+        if ( opp_has_ball && ball_in_area )
+        {
+            dlog.addText( Logger::TEAM, __FILE__": GK rush opp in area" );
+            agent->debugClient().addMessage( "GK_RushOpp" );
+            if ( Bhv_GoalieChaseBall().execute( agent ) ) return true;
+        }
+
+        // (B) Ball is LOOSE in the area (cross, deflection, failed pass)
+        //     → intercept if GK can reach within reasonable cycles
+        if ( ball_is_loose && ball_in_area
+             && ( self_step <= opp_step + 5
+                  || self_step <= tm_step + 2
+                  || self_step <= 8 ) )
+        {
+            dlog.addText( Logger::TEAM, __FILE__": GK intercept loose ball" );
+            agent->debugClient().addMessage( "GK_Loose" );
+            if ( Bhv_GoalieChaseBall().execute( agent ) ) return true;
+        }
+
+        // (C) Ball heading toward goal — chase it
+        if ( ball_coming && ball_pos.x < -30.0
+             && self_step <= opp_step + 3 )
+        {
+            dlog.addText( Logger::TEAM, __FILE__": GK chase incoming" );
+            agent->debugClient().addMessage( "GK_Chase" );
+            if ( Bhv_GoalieChaseBall().execute( agent ) ) return true;
+        }
+
+        // (D) Standard intercept (nobody has ball, ball near area)
+        if ( ball_in_area
+             && ( self_step <= opp_step + 3
+                  || self_step <= tm_step ) )
+        {
+            dlog.addText( Logger::TEAM, __FILE__": GK intercept standard" );
+            agent->debugClient().addMessage( "GK_Intercept" );
+            if ( Bhv_GoalieChaseBall().execute( agent ) ) return true;
+        }
+
+        // NOTE: if TEAMMATE has ball → do nothing here, fall through to
+        // positioning (Priority 2). GK stays in goal, no need to come out.
     }
 
-    // 1) SI EL BALÓN ESTÁ MUY CERCA DE SU ÁREA → Volver a home (CON HISTÉRESIS)
-    const double CLOSE_DIST = 15.0;
-    const double CLOSE_DIST_HYSTERESIS = 18.0;  // Umbral más alto si estaba presionando
-    const Vector2D HOME_POINT = Vector2D(-51.0, 0.0);
-
-    double close_threshold = s_was_pressing ? CLOSE_DIST_HYSTERESIS : CLOSE_DIST;
-
-    if ( ball_dist < close_threshold )
-    {
-        s_was_pressing = false;
-
-        // 1v1 dentro del área: rival tiene balón sin defensor cerca → avanzar a tapar ángulo
-        if ( wm.kickableOpponent() )
-        {
-            const PlayerObject * opp = wm.kickableOpponent();
-            if ( opp && opp->pos().x < SP.ourPenaltyAreaLineX()
-                 && opp->pos().absY() < 8.0 )  // no activar en cruces abiertos
-            {
-                bool defender_near = false;
-                for ( const PlayerObject * tm : wm.teammatesFromBall() )
-                {
-                    if ( tm->goalie() ) continue;
-                    if ( tm->distFromBall() < 8.0 ) { defender_near = true; break; }
-                }
-                if ( ! defender_near )
-                {
-                    double target_y = opp->pos().y * 0.3;
-                    target_y = std::max( target_y, -( SP.goalHalfWidth() - 0.5 ) );
-                    target_y = std::min( target_y,    SP.goalHalfWidth() - 0.5  );
-                    Vector2D advance( -44.0, target_y );
-                    agent->debugClient().addMessage( "1v1CloseAdvance" );
-                    agent->setNeckAction( new Neck_GoalieTurnNeck() );
-                    return Body_GoToPoint( advance, 1.0, SP.maxDashPower() ).execute( agent );
-                }
-            }
-        }
-
-        std::cerr << "[DBG Bhv_GoalieBasicMove] balón cerca (" << ball_dist
-                  << "m), volviendo a home: " << HOME_POINT << std::endl;
-        agent->doTurn( 0.0 );
-        agent->setNeckAction( new Neck_GoalieTurnNeck() );
-        return Body_GoToPoint( HOME_POINT, 1.0, SP.maxDashPower() ).execute( agent );
-    }
-
-    // 2) SI HAY RIVAL MUY CERCA SIN APOYO → Salgo a presionar (CON HISTÉRESIS Y VERIFICACIÓN DE APOYO)
-    {
-        Vector2D area_center( SP.ourPenaltyAreaLineX() + SP.penaltyAreaLength()/2.0, 0.0 );
-        double opp_dist = 1e6;
-        for ( auto * opp : wm.opponentsFromBall() )
-            opp_dist = std::min( opp_dist, opp->pos().dist( area_center ) );
-
-        int self_step = wm.interceptTable().selfStep();
-        int tm_step   = wm.interceptTable().teammateStep();
-        int opp_step  = wm.interceptTable().opponentStep();
-
-        const double PRESS_DIST = 7.0;
-        const double PRESS_DIST_HYSTERESIS = 5.0;
-
-        // NUEVO: Verificar si hay compañero con mejor posición
-        bool teammate_has_better_position = false;
-        if ( wm.kickableTeammate() )
-        {
-            teammate_has_better_position = true;
-            std::cerr << "[DBG Bhv_GoalieBasicMove] compañero tiene el balón, no presiono" << std::endl;
-        }
-        else if ( tm_step < self_step - 1 )  // Compañero llega mucho antes
-        {
-            teammate_has_better_position = true;
-            std::cerr << "[DBG Bhv_GoalieBasicMove] compañero llega antes (tm:" << tm_step 
-                      << " vs self:" << self_step << "), no presiono" << std::endl;
-        }
-
-        // Si estaba presionando pero ahora hay apoyo, dejar de presionar inmediatamente
-        if ( s_was_pressing && teammate_has_better_position )
-        {
-            s_was_pressing = false;
-            std::cerr << "[DBG Bhv_GoalieBasicMove] llegó apoyo, dejo de presionar y vuelvo" << std::endl;
-            // No hacer return aquí, dejar que continúe con la lógica normal de posicionamiento
-        }
-
-        // Usar histéresis: si NO estaba presionando, necesita oponente MÁS cerca
-        double press_threshold = s_was_pressing ? PRESS_DIST : PRESS_DIST_HYSTERESIS;
-
-        if ( opp_dist < press_threshold
-             && ! teammate_has_better_position
-             && ball_dist >= close_threshold )  // Solo si NO está en zona "volver a home"
-        {
-            s_was_pressing = true;
-            s_last_press_time = wm.time();
-            std::cerr << "[DBG Bhv_GoalieBasicMove] salgo a presionar rival cerca (" 
-                      << opp_dist << "m) sin apoyo" << std::endl;
-            return Bhv_GoalieChaseBall().execute( agent );
-        }
-        else if ( s_was_pressing && opp_dist >= PRESS_DIST )
-        {
-            s_was_pressing = false;
-        }
-    }
-
-
-    // 3) ELIMINADO: La condición de "balón lejano" era demasiado agresiva
-    // El portero perseguía balones a 60-90m incluso en campo contrario
-    // Esto dejaba la portería desprotegida en contraataques
-    // Las otras condiciones (presionar rival cerca, zona peligro) son suficientes
-
-    // ── Resto de tu lógica sin cambios ──
+    // ---------------------------------------------------------------
+    // PRIORITY 2: ALWAYS move to target at MAXIMUM SPEED
+    // The GK must never conserve stamina — it barely moves, so stamina
+    // is never a problem. Using anything less than max power makes the
+    // GK look "frozen" because it takes too many cycles to reposition.
     const Vector2D move_point = getTargetPoint( agent );
     dlog.addText( Logger::TEAM,
-                  __FILE__": Bhv_GoalieBasicMove. move_point(%.2f %.2f)",
-                  move_point.x, move_point.y );
+                  __FILE__": GK target(%.2f %.2f)", move_point.x, move_point.y );
 
-    if ( Bhv_BasicTackle( 1.0, 98.0 ).execute( agent ) ) return true;
-    if ( doPrepareDeepCross   ( agent, move_point ) )      return true;
-    if ( doStopAtMovePoint    ( agent, move_point ) )      return true;
-    if ( doMoveForDangerousState( agent, move_point ) )    return true;
-    if ( doCorrectX           ( agent, move_point ) )      return true;
-    if ( doCorrectBodyDir     ( agent, move_point, true ) )  return true;
-    if ( doGoToMovePoint      ( agent, move_point ) )      return true;
-    if ( doCorrectBodyDir     ( agent, move_point, false ) ) return true;
+    {
+        const double dist_to_target = wm.self().pos().dist( move_point );
 
-    dlog.addText( Logger::TEAM, __FILE__": only look ball" );
-    agent->debugClient().addMessage( "OnlyTurnNeck" );
-    agent->doTurn( 0.0 );
-    agent->setNeckAction( new Neck_GoalieTurnNeck() );
+        if ( dist_to_target > 0.3 )
+        {
+            agent->debugClient().addMessage( "GK_Sprint" );
+            agent->debugClient().setTarget( move_point );
+            Body_GoToPoint( move_point, 0.3, SP.maxDashPower() ).execute( agent );
+            agent->setNeckAction( new Neck_GoalieTurnNeck() );
+            return true;
+        }
+    }
+
+    // Already at target — face sideways to be ready for lateral dashes
+    {
+        const Vector2D ball_next = wm.ball().pos() + wm.ball().vel();
+        const AngleDeg target_angle = ( ball_next.y < 0.0 ? -90.0 : 90.0 );
+        Body_TurnToAngle( target_angle ).execute( agent );
+        agent->setNeckAction( new Neck_GoalieTurnNeck() );
+    }
+
     return true;
 }
 
@@ -216,127 +167,101 @@ bool Bhv_GoalieBasicMove::execute( PlayerAgent * agent )
 Vector2D
 Bhv_GoalieBasicMove::getTargetPoint( PlayerAgent * agent )
 {
-    const double base_move_x = -42.0;
-    const double danger_move_x = -49.0;
     const ServerParam & SP = ServerParam::i();
     const WorldModel & wm = agent->world();
 
-    // 1v1: rival tiene el balón dentro del área y no hay defensor de campo cerca
-    if ( wm.kickableOpponent() )
-    {
-        const PlayerObject * opp = wm.kickableOpponent();
-        if ( opp && opp->pos().x < SP.ourPenaltyAreaLineX()
-             && opp->pos().absY() < 8.0 )  // no activar en cruces abiertos
-        {
-            bool defender_near = false;
-            for ( const PlayerObject * tm : wm.teammatesFromBall() )
-            {
-                if ( tm->goalie() ) continue;
-                if ( tm->distFromBall() < 8.0 )
-                {
-                    defender_near = true;
-                    break;
-                }
-            }
-            if ( ! defender_near )
-            {
-                double target_y = opp->pos().y * 0.3;
-                target_y = std::max( target_y, -( SP.goalHalfWidth() - 0.5 ) );
-                target_y = std::min( target_y,    SP.goalHalfWidth() - 0.5  );
-                agent->debugClient().addMessage( "1v1Advance" );
-                return Vector2D( -38.0, target_y );
-            }
-        }
-    }
+    const double goal_half_w = SP.goalHalfWidth();       // 7.32/2 = 3.66
+    const double pitch_half_l = SP.pitchHalfLength();     // 52.5
+    const Vector2D goal_center( -pitch_half_l, 0.0 );
 
+    // ------------------------------------------------------------------
+    // 1. Predict where the ball will be
+    // ------------------------------------------------------------------
     int ball_reach_step = 0;
-    if ( ! wm.kickableTeammate()
-         && ! wm.kickableOpponent() )
+    if ( ! wm.kickableTeammate() && ! wm.kickableOpponent() )
     {
-        ball_reach_step
-            = std::min( wm.interceptTable().teammateStep(),
-                        wm.interceptTable().opponentStep() );
+        ball_reach_step = std::min( wm.interceptTable().teammateStep(),
+                                    wm.interceptTable().opponentStep() );
     }
-    const Vector2D base_pos = wm.ball().inertiaPoint( ball_reach_step );
+    const Vector2D ball_pos = wm.ball().inertiaPoint( ball_reach_step );
 
-
-    //---------------------------------------------------------//
-    // angle is very dangerous
-    if ( base_pos.y > ServerParam::i().goalHalfWidth() + 5.0 )
+    // ------------------------------------------------------------------
+    // 2. Dynamic base_move_x
+    //    Ball far away (x>0)  → GK at -46 (moderate advance)
+    //    Ball in midfield     → interpolate -46 to -49
+    //    Ball in penalty area → -49 to -50 (hug goal line)
+    // ------------------------------------------------------------------
+    double base_move_x;
+    if ( ball_pos.x > 0.0 )
     {
-        Vector2D right_pole( - ServerParam::i().pitchHalfLength(),
-                             ServerParam::i().goalHalfWidth() );
-        AngleDeg angle_to_pole = ( right_pole - base_pos ).th();
-
-        if ( -140.0 < angle_to_pole.degree()
-             && angle_to_pole.degree() < -90.0 )
-        {
-            agent->debugClient().addMessage( "RPole" );
-            return Vector2D( danger_move_x, ServerParam::i().goalHalfWidth() + 0.001 );
-        }
+        base_move_x = -46.0;
     }
-    else if ( base_pos.y < -ServerParam::i().goalHalfWidth() - 3.0 )
+    else if ( ball_pos.x > SP.ourPenaltyAreaLineX() )  // > -36
     {
-        Vector2D left_pole( - ServerParam::i().pitchHalfLength(),
-                            - ServerParam::i().goalHalfWidth() );
-        AngleDeg angle_to_pole = ( left_pole - base_pos ).th();
-
-        if ( 90.0 < angle_to_pole.degree()
-             && angle_to_pole.degree() < 145.0 )
-        {
-            agent->debugClient().addMessage( "LPole" );
-            return Vector2D( danger_move_x, - ServerParam::i().goalHalfWidth() - 0.001 );
-        }
+        double ratio = ( -ball_pos.x ) / 36.0;  // 0..1
+        base_move_x = -46.0 - 3.0 * ratio;      // -46..-49
+    }
+    else
+    {
+        // Ball inside/near penalty area
+        double depth = std::min( -ball_pos.x - 36.0, 16.5 ) / 16.5; // 0..1
+        base_move_x = -49.0 - 1.0 * depth;  // -49..-50
+        base_move_x = std::max( base_move_x, -pitch_half_l + 0.5 );
     }
 
-    //---------------------------------------------------------//
-    // ball is close to goal line
-    if ( base_pos.x < -ServerParam::i().pitchHalfLength() + 9.0
-         && base_pos.absY() > ServerParam::i().goalHalfWidth() + 2.8 )
+    // ------------------------------------------------------------------
+    // 3. Near-post coverage: when ball is wide (large |Y|) and deep,
+    //    the GK must move to the near post, not stay in the center.
+    //    This is the #1 cause of goals against us.
+    // ------------------------------------------------------------------
+    if ( ball_pos.x < -36.0 && ball_pos.absY() > goal_half_w + 2.0 )
     {
-        Vector2D target_point( base_move_x, ServerParam::i().goalHalfWidth() - 0.4 );
-        if ( base_pos.y < 0.0 )
-        {
-            target_point.y *= -1.0;
-        }
+        // Ball is deep and wide — cover near post
+        double post_y = ( ball_pos.y > 0.0 )
+                        ? goal_half_w - 0.3
+                        : -( goal_half_w - 0.3 );
+        double post_x = std::max( base_move_x, -pitch_half_l + 0.5 );
 
-        dlog.addText( Logger::TEAM,
-                      __FILE__": getTarget. target is goal pole" );
-        agent->debugClient().addMessage( "Pos(1)" );
-
-        return target_point;
+        agent->debugClient().addMessage( "GK_NearPost" );
+        dlog.addText( Logger::TEAM, __FILE__": getTarget near-post (%.1f, %.1f)",
+                      post_x, post_y );
+        return Vector2D( post_x, post_y );
     }
 
-//---------------------------------------------------------//
+    // ------------------------------------------------------------------
+    // 4. Very wide ball (outside goal width but not deep) — go to post
+    // ------------------------------------------------------------------
+    if ( ball_pos.absY() > goal_half_w + 5.0 )
     {
-        const double x_back = 4.0; // tune this!!
-        int ball_pred_cycle = 8; // tune this!!
-        const double y_buf = 0.5; // tune this!!
-        const Vector2D base_point( - ServerParam::i().pitchHalfLength() - x_back,
-                                   0.0 );
+        double post_y = ( ball_pos.y > 0.0 )
+                        ? goal_half_w - 0.2
+                        : -( goal_half_w - 0.2 );
+        agent->debugClient().addMessage( "GK_WideBall" );
+        return Vector2D( std::max( base_move_x, -pitch_half_l + 0.5 ), post_y );
+    }
+
+    // ------------------------------------------------------------------
+    // 5. Normal case: position on ball-to-goal bisecting line
+    //    The GK stands where the line from ball to center of goal
+    //    (offset behind goal for proper angle) crosses base_move_x.
+    // ------------------------------------------------------------------
+    {
+        const double x_back = 3.5;  // virtual point behind goal
+        const Vector2D base_point( -pitch_half_l - x_back, 0.0 );
+
         Vector2D ball_point;
         if ( wm.kickableOpponent() )
         {
-            ball_point = base_pos;
-            agent->debugClient().addMessage( "Pos(2)" );
+            ball_point = ball_pos;
         }
         else
         {
-            int opp_min = wm.interceptTable().opponentStep();
-            if ( opp_min < ball_pred_cycle )
-            {
-                ball_pred_cycle = opp_min;
-                dlog.addText( Logger::TEAM,
-                              __FILE__": opp may reach near future. cycle = %d",
-                              opp_min );
-            }
-
-            ball_point
-                = inertia_n_step_point( base_pos,
-                                        wm.ball().vel(),
-                                        ball_pred_cycle,
-                                        ServerParam::i().ballDecay() );
-            agent->debugClient().addMessage( "Pos(3)" );
+            int pred_cycle = std::min( 8,
+                             wm.interceptTable().opponentStep() );
+            ball_point = inertia_n_step_point( ball_pos,
+                                               wm.ball().vel(),
+                                               pred_cycle,
+                                               SP.ballDecay() );
         }
 
         if ( ball_point.x < base_point.x + 0.1 )
@@ -347,14 +272,10 @@ Bhv_GoalieBasicMove::getTargetPoint( PlayerAgent * agent )
         Line2D ball_line( ball_point, base_point );
         double move_y = ball_line.getY( base_move_x );
 
-        if ( move_y > ServerParam::i().goalHalfWidth() - y_buf )
-        {
-            move_y = ServerParam::i().goalHalfWidth() - y_buf;
-        }
-        if ( move_y < - ServerParam::i().goalHalfWidth() + y_buf )
-        {
-            move_y = - ServerParam::i().goalHalfWidth() + y_buf;
-        }
+        // Clamp to goal posts with small buffer
+        const double y_buf = 0.3;
+        if ( move_y > goal_half_w - y_buf )  move_y = goal_half_w - y_buf;
+        if ( move_y < -goal_half_w + y_buf ) move_y = -goal_half_w + y_buf;
 
         return Vector2D( base_move_x, move_y );
     }
